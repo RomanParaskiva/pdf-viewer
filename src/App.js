@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from "react";
-import { Document, Page, Outline } from "react-pdf";
+import { useState, useEffect, useRef, createRef } from "react";
+import { Document, Page } from "react-pdf";
 import { useSpring, animated } from "@react-spring/web";
 import { createUseGesture, pinchAction, dragAction } from "@use-gesture/react";
 import "react-pdf/dist/esm/Page/AnnotationLayer.css";
@@ -12,13 +12,18 @@ pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/b
 
 function App() {
   const [pdfUrl, setPdfUrl] = useState("");
-  const [numPages, setNumPages] = useState();
+  const [numPages, setNumPages] = useState(0);
   const [page, setPage] = useState(1);
   const [title, setTitle] = useState("");
   const [scale, setScale] = useState(1);
+  const [screenWidth, setScreenWidth] = useState(window.innerWidth);
+  const pageRefs = useRef([]);
 
   function onDocumentLoadSuccess({ numPages }) {
     setNumPages(numPages);
+    pageRefs.current = Array(numPages)
+      .fill()
+      .map((_, i) => pageRefs.current[i] || createRef());
   }
 
   function onItemClick({ pageNumber: itemPageNumber }) {
@@ -27,6 +32,7 @@ function App() {
 
   const useGesture = createUseGesture([pinchAction, dragAction]);
   const ref = useRef(null);
+
   useEffect(() => {
     const handler = (e) => e.preventDefault();
     document.addEventListener("gesturestart", handler);
@@ -49,6 +55,52 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const updateWidth = () => setScreenWidth(window.innerWidth);
+    window.addEventListener("resize", updateWidth);
+    return () => window.removeEventListener("resize", updateWidth);
+  }, []);
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        let visiblePageIndex = -1;
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            const pageIndex = pageRefs.current.findIndex(
+              (ref) => ref.current === entry.target
+            );
+            if (pageIndex !== -1) {
+              visiblePageIndex = pageIndex;
+            }
+          }
+        });
+        if (visiblePageIndex !== -1) {
+          setPage(visiblePageIndex + 1);
+        }
+      },
+      {
+        root: null,
+        rootMargin: "0px",
+        threshold: 0.5,
+      }
+    );
+
+    pageRefs.current.forEach((ref) => {
+      if (ref.current) {
+        observer.observe(ref.current);
+      }
+    });
+
+    return () => {
+      pageRefs.current.forEach((ref) => {
+        if (ref.current) {
+          observer.unobserve(ref.current);
+        }
+      });
+    };
+  }, [numPages]);
+
   const [style, api] = useSpring(() => ({
     x: 0,
     y: 0,
@@ -57,31 +109,26 @@ function App() {
 
   useGesture(
     {
-      // onHover: ({ active, event }) => console.log('hover', event, active),
-      // onMove: ({ event }) => console.log('move', event),
       onDrag: ({
         pinching,
         cancel,
         swipe: [swipeX],
-        overflow,
         offset: [x, y],
-        ...rest
       }) => {
         if (pinching) return cancel();
         if (swipeX) {
-          if (swipeX === 1) setPage((prev) => (prev === 1 ? 1 : prev - 1));
-          if (swipeX === -1)
-            setPage((prev) => (prev === numPages ? numPages : prev + 1));
+          // if (swipeX === 1) setPage((prev) => (prev === 1 ? 1 : prev - 1));
+          // if (swipeX === -1)
+          //   setPage((prev) => (prev === numPages ? numPages : prev + 1));
           api.start({ x: 0, y: 0 });
         } else {
-        api.start({ x, y });
+          api.start({ x, y });
         }
       },
       onPinch: ({
         origin: [ox, oy],
         first,
-        movement: [ms],
-        offset: [s, a],
+        offset: [s],
         memo,
       }) => {
         if (first) {
@@ -90,12 +137,11 @@ function App() {
           const ty = oy - (y + height / 2);
           memo = [style.x.get(), style.y.get(), tx, ty];
         }
-        ref.current.style.transformOrigin = `${ox} ${oy}`;
+        ref.current.style.transformOrigin = `${ox}px ${oy}px`;
         api.start({
           scale: s,
           x: style.x.get(),
           y: style.y.get(),
-          origin: [ox, oy],
         });
         return memo;
       },
@@ -112,8 +158,16 @@ function App() {
     }
   );
 
+  const scrollToPage = (pageNumber) => {
+    if (pageRefs.current[pageNumber - 1]?.current) {
+      pageRefs.current[pageNumber - 1].current.scrollIntoView({
+        behavior: "smooth",
+      });
+    }
+  };
+
   return (
-    <>
+    <div style={{ width: "100%", height: "100vh" }}>
       <div className="pdf-wrapper">
         <Document
           className="document"
@@ -122,15 +176,20 @@ function App() {
           onItemClick={onItemClick}
         >
           <animated.div className="animateddiv" ref={ref} style={style}>
-            <Page className="page" pageNumber={page} scale={scale} />
-            {/* {Array.from(new Array(numPages), (el, index) => (
-              <Page
+            {Array.from(new Array(numPages), (el, index) => (
+              <div
                 key={`page_${index + 1}`}
-                className="page"
-                pageNumber={index + 1}
-                scale={scale}
-              />
-            ))} */}
+                ref={pageRefs.current[index]}
+                style={{ marginBottom: "10px" }} // Добавим отступы между страницами
+              >
+                <Page
+                  className="page"
+                  pageNumber={index + 1}
+                  scale={scale}
+                  width={screenWidth}
+                />
+              </div>
+            ))}
           </animated.div>
         </Document>
 
@@ -155,31 +214,40 @@ function App() {
             </span>
           </div>
           <span className="text">{title}</span>
-          <span
-            className="pdf-btn"
-            onClick={() => {
-              setPage((prev) => (prev === 1 ? 1 : prev - 1));
-              setScale(1);
-            }}
-          >
-            &#5176;
-          </span>
+
+          <div>
+            <span
+              className="pdf-btn"
+              onClick={() => {
+                const newPage = page === 1 ? 1 : page - 1;
+                setPage(newPage);
+                scrollToPage(newPage);
+              }}
+            >
+              &#5176;
+            </span>
+          </div>
+
           <span className="text">
             {page} / {numPages}
           </span>
 
-          <span
-            className="pdf-btn"
-            onClick={() => {
-              setPage((prev) => (prev === numPages ? numPages : prev + 1));
-              setScale(1);
-            }}
-          >
-            &#5171;
-          </span>
+          <div>
+            <span
+              className="pdf-btn"
+              onClick={() => {
+                const newPage = page === numPages ? numPages : page + 1;
+                setPage(newPage);
+                scrollToPage(newPage);
+              }}
+            >
+              &#5171;
+            </span>
+          </div>
+
         </div>
       </div>
-    </>
+    </div>
   );
 }
 
